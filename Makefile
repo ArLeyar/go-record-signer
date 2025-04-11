@@ -1,4 +1,4 @@
-.PHONY: init start
+.PHONY: init start test
 
 init:
 	@if [ ! -f .env ]; then \
@@ -10,4 +10,7 @@ init:
 	docker-compose up initdb
 
 start:
-	docker-compose up 
+	docker-compose up
+
+test:
+	go test ./... 
