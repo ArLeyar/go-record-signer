@@ -25,11 +25,19 @@ services:
       - "4222:4222"
       - "8222:8222"
     command: "--jetstream --http_port 8222"
+
+  #nats image does not have shell, so we need to use alpine to check health
+  nats-healthcheck:
+    image: alpine
+    depends_on:
+      - nats
+    command: /bin/sh -c "apk add --no-cache curl && tail -f /dev/null"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8222/healthz"]
-      interval: 5s
-      timeout: 5s
-      retries: 3
+      test: ["CMD-SHELL", "curl -sf http://nats:8222/healthz || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
 
   initdb:
     build: 
@@ -50,10 +58,23 @@ services:
     env_file:
       - .env
     depends_on:
-      initdb:
-        condition: service_completed_successfully
-      nats:
+      postgres:
+        condition: service_healthy
+      nats-healthcheck:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: /app/worker
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats-healthcheck:
         condition: service_healthy
 
 volumes:
-  postgres_data: 
+  postgres_data:
