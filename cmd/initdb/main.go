@@ -106,7 +106,7 @@ func generateKey(encryptor *crypto.KeyEncryptor) (*models.SigningKey, error) {
 	return &models.SigningKey{
 		PublicKey:  pubKey,
 		PrivateKey: encryptedKey,
-		InUse:      true,
+		InUse:      false,
 	}, nil
 }
 

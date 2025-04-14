@@ -39,5 +39,5 @@ type SigningKey struct {
 	PublicKey  []byte     `json:"public_key" gorm:"type:bytea;not null"`
 	PrivateKey []byte     `json:"private_key,omitempty" gorm:"type:bytea;not null"`
 	LastUsed   *time.Time `json:"last_used,omitempty"`
-	InUse      bool       `json:"in_use" gorm:"not null;default:true"`
+	InUse      bool       `json:"in_use" gorm:"not null;default:false"`
 }

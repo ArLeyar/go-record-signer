@@ -62,8 +62,20 @@ services:
         condition: service_healthy
       nats-healthcheck:
         condition: service_healthy
+  worker1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: /app/worker
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats-healthcheck:
+        condition: service_healthy
 
-  worker:
+  worker2:
     build:
       context: .
       dockerfile: Dockerfile

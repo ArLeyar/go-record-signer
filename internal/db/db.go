@@ -6,7 +6,6 @@ import (
 	"log"
 	"time"
 
-	sq "github.com/Masterminds/squirrel"
 	"github.com/arleyar/go-record-signer/pkg/config"
 	"github.com/arleyar/go-record-signer/pkg/models"
 	"gorm.io/driver/postgres"
@@ -183,36 +182,31 @@ func (db *DB) UpdateRecordSignatures(ctx context.Context, signatures map[int][]b
 	}
 
 	now := time.Now()
-	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
-	caseBuilder := sq.Case("id")
-	ids := make([]interface{}, 0, len(signatures))
-
-	for id, sig := range signatures {
-		caseBuilder = caseBuilder.When(sq.Expr("?", id), sq.Expr("?", sig))
-		ids = append(ids, id)
+	tx := db.gorm.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
 	}
 
-	query, args, err := psql.Update("records").
-		Set("signature", caseBuilder).
-		Set("signed_by", keyID).
-		Set("signed_at", now).
-		Set("status", models.RecordStatusSigned).
-		Where(sq.Expr("id IN ("+sq.Placeholders(len(ids))+")", ids...)).
-		Where(sq.Eq{"status": models.RecordStatusQueued}).
-		ToSql()
+	defer tx.Rollback()
 
-	if err != nil {
-		return fmt.Errorf("failed to build update query: %w", err)
+	for id, signature := range signatures {
+		result := tx.Model(&models.Record{}).
+			Where("id = ? AND status = ?", id, models.RecordStatusQueued).
+			Updates(map[string]interface{}{
+				"signature": signature,
+				"signed_by": keyID,
+				"signed_at": now,
+				"status":    models.RecordStatusSigned,
+			})
+
+		if result.Error != nil {
+			return fmt.Errorf("failed to update signature for record %d: %w", id, result.Error)
+		}
 	}
 
-	result := db.gorm.WithContext(ctx).Exec(query, args...)
-	if result.Error != nil {
-		return fmt.Errorf("failed to update signatures: %w", result.Error)
-	}
-
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("no records were updated")
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil

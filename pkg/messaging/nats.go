@@ -114,7 +114,7 @@ func (c *NATSClient) SubscribeBatch(handler func(ctx context.Context, msg *Batch
 
 			msg.Ack()
 		},
-		nats.Durable(QueueGroupName),
+		nats.Durable(fmt.Sprintf("record-signer-%s", uuid.New().String())),
 		nats.ManualAck(),
 	)
 }
