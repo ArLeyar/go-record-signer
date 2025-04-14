@@ -66,6 +66,7 @@ The project focuses on simplicity while meeting the core requirements. Some area
 - **Graceful shutdown**: Basic cleanup implemented, but lacks comprehensive graceful shutdown
 - **Key management**: For simplicity, private keys are stored encrypted in the database; a more secure approach would use an HSM, vault service, or key management system in production
 - **Worker implementation**: For simplicity, concurrency is achieved by running multiple worker instances. An alternative approach could use Go's concurrency features (goroutines) within a single worker process
+- **Database optimization**: The database schema is simple with minimal indexing. In production, additional indexes would be needed on frequently queried columns (e.g., record status), and query optimization would be required for handling millions of records efficiently
 
 ## Original Task
 
