@@ -5,12 +5,33 @@ import (
 	"time"
 )
 
+type RecordStatus string
+
+const (
+	RecordStatusPending RecordStatus = "PENDING"
+	RecordStatusQueued  RecordStatus = "QUEUED"
+	RecordStatusSigned  RecordStatus = "SIGNED"
+)
+
 type Record struct {
 	ID        int             `json:"id,omitempty" db:"id"`
 	Payload   json.RawMessage `json:"payload" db:"payload"`
 	Signature []byte          `json:"signature,omitempty" db:"signature"`
 	SignedBy  int             `json:"signed_by,omitempty" db:"signed_by"`
 	SignedAt  *time.Time      `json:"signed_at,omitempty" db:"signed_at"`
+	Status    RecordStatus    `json:"status" db:"status"`
+}
+
+type RecordMessage struct {
+	ID      int             `json:"id"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+func NewRecordMessage(r *Record) RecordMessage {
+	return RecordMessage{
+		ID:      r.ID,
+		Payload: r.Payload,
+	}
 }
 
 type SigningKey struct {

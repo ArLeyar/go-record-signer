@@ -60,7 +60,8 @@ func (db *DB) CreateTables() error {
 			payload JSONB NOT NULL,
 			signature BYTEA,
 			signed_by INTEGER REFERENCES signing_keys(id),
-			signed_at TIMESTAMP
+			signed_at TIMESTAMP,
+			status VARCHAR(10) NOT NULL DEFAULT 'PENDING'
 		);
 	`)
 	if err != nil {
@@ -110,9 +111,13 @@ func (db *DB) InsertRecords(records []*models.Record) error {
 			end = totalRecords
 		}
 
-		query := db.sb.Insert("records").Columns("payload")
+		query := db.sb.Insert("records").Columns("payload", "status")
 		for j := i; j < end; j++ {
-			query = query.Values(records[j].Payload)
+			status := models.RecordStatusPending
+			if records[j].Status != "" {
+				status = records[j].Status
+			}
+			query = query.Values(records[j].Payload, status)
 		}
 
 		_, err := query.RunWith(db.conn).ExecContext(ctx)
@@ -121,6 +126,59 @@ func (db *DB) InsertRecords(records []*models.Record) error {
 		}
 
 		log.Printf("Inserted %d of %d records", end, totalRecords)
+	}
+
+	return nil
+}
+
+func (db *DB) GetPendingRecords(ctx context.Context, batchSize int) ([]*models.Record, error) {
+	query := db.sb.Select("id", "payload").
+		From("records").
+		Where("status = ?", models.RecordStatusPending).
+		OrderBy("id").
+		Limit(uint64(batchSize))
+
+	rows, err := query.RunWith(db.conn).QueryContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending records: %w", err)
+	}
+	defer rows.Close()
+
+	var records []*models.Record
+	for rows.Next() {
+		var record models.Record
+		record.Status = models.RecordStatusPending
+		if err := rows.Scan(&record.ID, &record.Payload); err != nil {
+			return nil, fmt.Errorf("failed to scan record: %w", err)
+		}
+		records = append(records, &record)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating over rows: %w", err)
+	}
+
+	return records, nil
+}
+
+func (db *DB) UpdateRecordsToQueued(ctx context.Context, records []*models.Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	ids := make([]int, len(records))
+	for i, record := range records {
+		ids[i] = record.ID
+	}
+
+	query := db.sb.Update("records").
+		Set("status", models.RecordStatusQueued).
+		Where(sq.Eq{"id": ids}).
+		Where("status = ?", models.RecordStatusPending)
+
+	_, err := query.RunWith(db.conn).ExecContext(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to update records to queued: %w", err)
 	}
 
 	return nil

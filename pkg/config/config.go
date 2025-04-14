@@ -11,6 +11,8 @@ type Config struct {
 	KeyCount            int
 	RecordCount         int
 	EncryptionKeyBase64 string
+	NatsURL             string
+	BatchSize           int
 }
 
 func LoadConfig() *Config {
@@ -19,6 +21,8 @@ func LoadConfig() *Config {
 		KeyCount:            getEnvAsInt("KEY_COUNT", 100),
 		RecordCount:         getEnvAsInt("RECORD_COUNT", 100000),
 		EncryptionKeyBase64: getEnv("ENCRYPTION_KEY", ""),
+		NatsURL:             getEnv("NATS_URL", "nats://localhost:4222"),
+		BatchSize:           getEnvAsInt("BATCH_SIZE", 100),
 	}
 
 	return cfg
