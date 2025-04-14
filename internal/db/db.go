@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/arleyar/go-record-signer/pkg/config"
 	"github.com/arleyar/go-record-signer/pkg/models"
 	"gorm.io/driver/postgres"
@@ -115,6 +117,102 @@ func (db *DB) UpdateRecordsToQueued(ctx context.Context, records []*models.Recor
 
 	if result.Error != nil {
 		return fmt.Errorf("failed to update records to queued: %w", result.Error)
+	}
+
+	return nil
+}
+
+func (db *DB) GetLeastRecentlyUsedKey(ctx context.Context) (*models.SigningKey, error) {
+	var key models.SigningKey
+
+	err := db.gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.
+			Where("in_use = ?", false).
+			Order("last_used NULLS FIRST, id").
+			Limit(1).
+			Find(&key)
+
+		if result.Error != nil {
+			return result.Error
+		}
+
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("no available signing keys found")
+		}
+
+		now := time.Now()
+		result = tx.Model(&key).
+			Updates(map[string]interface{}{
+				"in_use":    true,
+				"last_used": now,
+			})
+
+		if result.Error != nil {
+			return result.Error
+		}
+
+		key.LastUsed = &now
+		key.InUse = true
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get least recently used key: %w", err)
+	}
+
+	return &key, nil
+}
+
+func (db *DB) ReleaseKey(ctx context.Context, keyID int) error {
+	result := db.gorm.WithContext(ctx).
+		Model(&models.SigningKey{}).
+		Where("id = ?", keyID).
+		Update("in_use", false)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to release key %d: %w", keyID, result.Error)
+	}
+
+	return nil
+}
+
+func (db *DB) UpdateRecordSignatures(ctx context.Context, signatures map[int][]byte, keyID int) error {
+	if len(signatures) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
+
+	caseBuilder := sq.Case("id")
+	ids := make([]interface{}, 0, len(signatures))
+
+	for id, sig := range signatures {
+		caseBuilder = caseBuilder.When(sq.Expr("?", id), sq.Expr("?", sig))
+		ids = append(ids, id)
+	}
+
+	query, args, err := psql.Update("records").
+		Set("signature", caseBuilder).
+		Set("signed_by", keyID).
+		Set("signed_at", now).
+		Set("status", models.RecordStatusSigned).
+		Where(sq.Expr("id IN ("+sq.Placeholders(len(ids))+")", ids...)).
+		Where(sq.Eq{"status": models.RecordStatusQueued}).
+		ToSql()
+
+	if err != nil {
+		return fmt.Errorf("failed to build update query: %w", err)
+	}
+
+	result := db.gorm.WithContext(ctx).Exec(query, args...)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update signatures: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("no records were updated")
 	}
 
 	return nil

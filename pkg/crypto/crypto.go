@@ -3,7 +3,9 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -74,4 +76,22 @@ func (e *KeyEncryptor) Decrypt(ciphertext []byte) ([]byte, error) {
 	}
 
 	return plaintext, nil
+}
+
+func (e *KeyEncryptor) SignPayload(privateKeyBytes []byte, payload []byte) ([]byte, error) {
+	decryptedKey, err := e.Decrypt(privateKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt private key: %w", err)
+	}
+
+	privateKey, err := x509.ParsePKCS8PrivateKey(decryptedKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key: %w", err)
+	}
+
+	if key, ok := privateKey.(ed25519.PrivateKey); ok {
+		return ed25519.Sign(key, payload), nil
+	} else {
+		return nil, fmt.Errorf("unsupported private key type: %T", privateKey)
+	}
 }

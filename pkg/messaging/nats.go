@@ -1,8 +1,10 @@
 package messaging
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/arleyar/go-record-signer/pkg/models"
@@ -11,9 +13,10 @@ import (
 )
 
 const (
-	StreamName = "records"
-	Subject    = "record.batches"
-	MaxAge     = 24 * time.Hour
+	StreamName     = "records"
+	Subject        = "record.batches"
+	MaxAge         = 24 * time.Hour
+	QueueGroupName = "record-signers"
 )
 
 type BatchMessage struct {
@@ -88,4 +91,30 @@ func (c *NATSClient) PublishBatch(records []*models.Record) error {
 	}
 
 	return nil
+}
+
+func (c *NATSClient) SubscribeBatch(handler func(ctx context.Context, msg *BatchMessage) error) (*nats.Subscription, error) {
+	return c.js.QueueSubscribe(
+		Subject,
+		QueueGroupName,
+		func(msg *nats.Msg) {
+			var batchMsg BatchMessage
+			if err := json.Unmarshal(msg.Data, &batchMsg); err != nil {
+				log.Printf("Failed to unmarshal batch message: %v", err)
+				msg.Nak()
+				return
+			}
+
+			ctx := context.Background()
+			if err := handler(ctx, &batchMsg); err != nil {
+				log.Printf("Failed to process batch message: %v", err)
+				msg.Nak()
+				return
+			}
+
+			msg.Ack()
+		},
+		nats.Durable(QueueGroupName),
+		nats.ManualAck(),
+	)
 }
