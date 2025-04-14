@@ -2,72 +2,52 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
-	"time"
 
-	sq "github.com/Masterminds/squirrel"
 	"github.com/arleyar/go-record-signer/pkg/config"
 	"github.com/arleyar/go-record-signer/pkg/models"
-	_ "github.com/lib/pq"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 type DB struct {
-	conn *sql.DB
-	sb   sq.StatementBuilderType
+	gorm *gorm.DB
 }
 
 func New(cfg *config.Config) (*DB, error) {
-	conn, err := sql.Open("postgres", cfg.DatabaseURL)
+	gormDB, err := gorm.Open(postgres.Open(cfg.DatabaseURL), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	err = conn.Ping()
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
+
+	err = sqlDB.Ping()
 	if err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	log.Println("Connected to database")
-	return &DB{
-		conn: conn,
-		sb:   sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
-	}, nil
+	return &DB{gorm: gormDB}, nil
 }
 
-func (db *DB) Close() {
-	if db.conn != nil {
-		db.conn.Close()
+func (db *DB) Close() error {
+	sqlDB, err := db.gorm.DB()
+	if err != nil {
+		return fmt.Errorf("error getting database connection: %w", err)
 	}
+	return sqlDB.Close()
 }
 
 func (db *DB) CreateTables() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := db.conn.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS signing_keys (
-			id SERIAL PRIMARY KEY,
-			public_key BYTEA NOT NULL,
-			private_key BYTEA NOT NULL,
-			last_used TIMESTAMP,
-			in_use BOOLEAN NOT NULL DEFAULT true
-		);
-
-		CREATE TABLE IF NOT EXISTS records (
-			id SERIAL PRIMARY KEY,
-			payload JSONB NOT NULL,
-			signature BYTEA,
-			signed_by INTEGER REFERENCES signing_keys(id),
-			signed_at TIMESTAMP,
-			status VARCHAR(10) NOT NULL DEFAULT 'PENDING'
-		);
-	`)
+	err := db.gorm.AutoMigrate(&models.SigningKey{}, &models.Record{})
 	if err != nil {
 		return fmt.Errorf("failed to create tables: %w", err)
 	}
-
 	return nil
 }
 
@@ -76,19 +56,9 @@ func (db *DB) InsertSigningKeys(keys []*models.SigningKey) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	query := db.sb.Insert("signing_keys").
-		Columns("public_key", "private_key", "in_use")
-
-	for _, key := range keys {
-		query = query.Values(key.PublicKey, key.PrivateKey, key.InUse)
-	}
-
-	_, err := query.RunWith(db.conn).ExecContext(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to insert signing keys: %w", err)
+	result := db.gorm.Create(keys)
+	if result.Error != nil {
+		return fmt.Errorf("failed to insert signing keys: %w", result.Error)
 	}
 
 	return nil
@@ -99,63 +69,29 @@ func (db *DB) InsertRecords(records []*models.Record) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	batchSize := 1000
+	const batchSize = 1000
 	totalRecords := len(records)
 
-	for i := 0; i < totalRecords; i += batchSize {
-		end := i + batchSize
-		if end > totalRecords {
-			end = totalRecords
-		}
-
-		query := db.sb.Insert("records").Columns("payload", "status")
-		for j := i; j < end; j++ {
-			status := models.RecordStatusPending
-			if records[j].Status != "" {
-				status = records[j].Status
-			}
-			query = query.Values(records[j].Payload, status)
-		}
-
-		_, err := query.RunWith(db.conn).ExecContext(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to insert records batch %d-%d: %w", i, end-1, err)
-		}
-
-		log.Printf("Inserted %d of %d records", end, totalRecords)
+	result := db.gorm.CreateInBatches(records, batchSize)
+	if result.Error != nil {
+		return fmt.Errorf("failed to insert records: %w", result.Error)
 	}
 
+	log.Printf("Inserted %d records", totalRecords)
 	return nil
 }
 
 func (db *DB) GetPendingRecords(ctx context.Context, batchSize int) ([]*models.Record, error) {
-	query := db.sb.Select("id", "payload").
-		From("records").
-		Where("status = ?", models.RecordStatusPending).
-		OrderBy("id").
-		Limit(uint64(batchSize))
-
-	rows, err := query.RunWith(db.conn).QueryContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query pending records: %w", err)
-	}
-	defer rows.Close()
-
 	var records []*models.Record
-	for rows.Next() {
-		var record models.Record
-		record.Status = models.RecordStatusPending
-		if err := rows.Scan(&record.ID, &record.Payload); err != nil {
-			return nil, fmt.Errorf("failed to scan record: %w", err)
-		}
-		records = append(records, &record)
-	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating over rows: %w", err)
+	result := db.gorm.WithContext(ctx).
+		Where("status = ?", models.RecordStatusPending).
+		Order("id").
+		Limit(batchSize).
+		Find(&records)
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to query pending records: %w", result.Error)
 	}
 
 	return records, nil
@@ -171,14 +107,14 @@ func (db *DB) UpdateRecordsToQueued(ctx context.Context, records []*models.Recor
 		ids[i] = record.ID
 	}
 
-	query := db.sb.Update("records").
-		Set("status", models.RecordStatusQueued).
-		Where(sq.Eq{"id": ids}).
-		Where("status = ?", models.RecordStatusPending)
+	result := db.gorm.WithContext(ctx).
+		Model(&models.Record{}).
+		Where("id IN ?", ids).
+		Where("status = ?", models.RecordStatusPending).
+		Update("status", models.RecordStatusQueued)
 
-	_, err := query.RunWith(db.conn).ExecContext(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to update records to queued: %w", err)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update records to queued: %w", result.Error)
 	}
 
 	return nil
