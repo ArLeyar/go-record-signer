@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/arleyar/go-record-signer/pkg/config"
@@ -183,18 +184,26 @@ func (db *DB) UpdateRecordSignatures(ctx context.Context, signatures map[int][]b
 
 	now := time.Now()
 
+	ids := make([]int, 0, len(signatures))
+	for id := range signatures {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+
 	tx := db.gorm.WithContext(ctx).Begin()
+
 	if tx.Error != nil {
 		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
 	}
 
 	defer tx.Rollback()
 
-	for id, signature := range signatures {
+	// Process records in sorted order to prevent deadlocks
+	for _, id := range ids {
 		result := tx.Model(&models.Record{}).
 			Where("id = ? AND status = ?", id, models.RecordStatusQueued).
 			Updates(map[string]interface{}{
-				"signature": signature,
+				"signature": signatures[id],
 				"signed_by": keyID,
 				"signed_at": now,
 				"status":    models.RecordStatusSigned,
